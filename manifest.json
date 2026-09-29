@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "local.hue",
+  "name": "Hue for Omarchy",
+  "version": "1.1.0",
+  "author": "Omarchy Hue contributors",
+  "description": "Control a local Philips Hue Bridge from the Omarchy bar",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "HuePanel.qml"},
+  "barWidget": {
+    "displayName": "Hue",
+    "description": "Control all lights, rooms, zones, and individual bulbs",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
