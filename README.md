@@ -20,9 +20,11 @@ A Philips Hue control panel for the Omarchy status bar. It uses Omarchy's native
 
 ## Install
 
-From a checkout of this repository, while logged into an Omarchy desktop session:
+While logged into an Omarchy desktop session:
 
 ```sh
+git clone https://github.com/lns2bt/omarchy-hue.git
+cd omarchy-hue
 bash install.sh
 ```
 
@@ -34,10 +36,10 @@ bash install.sh --upgrade
 
 `--upgrade` backs up the existing plugin under `${XDG_STATE_HOME:-~/.local/state}/omarchy-hue/backups/`. When first enabling the widget, the installer also backs up `shell.json` there. It does not overwrite an existing plugin unless you explicitly use `--upgrade`. It does not alter or copy your bridge credentials.
 
-The repository root also contains `manifest.json`, so after publishing it as a Git repository you can use Omarchy's native plugin installer instead:
+The repository root also contains `manifest.json`, so you can use Omarchy's native plugin installer instead:
 
 ```sh
-omarchy plugin add <repository-url> --enable --yes
+omarchy plugin add https://github.com/lns2bt/omarchy-hue.git --enable --yes
 omarchy plugin update local.hue --yes
 ```
 
