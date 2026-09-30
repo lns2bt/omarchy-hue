@@ -18,6 +18,7 @@ import urllib.request
 
 
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy" / "hue.json"
+FAVORITES = CONFIG.with_name("hue-favorites.json")
 UUID_CHARS = set("0123456789abcdef-")
 
 
@@ -26,6 +27,10 @@ class HueError(Exception):
 
 
 class HueAuthError(HueError):
+    pass
+
+
+class HueCertificateError(HueError):
     pass
 
 
@@ -48,16 +53,16 @@ def load():
         return {}
 
 
-def save(data):
-    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, path = tempfile.mkstemp(prefix=".hue-", dir=CONFIG.parent)
+def save(data, destination=CONFIG):
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix=".hue-", dir=destination.parent)
     try:
         with os.fdopen(fd, "w") as output:
             os.fchmod(output.fileno(), 0o600)
             json.dump(data, output)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(path, CONFIG)
+        os.replace(path, destination)
     finally:
         if os.path.exists(path):
             os.unlink(path)
@@ -82,13 +87,13 @@ class PinnedConnection(http.client.HTTPSConnection):
         actual = hashlib.sha256(self.sock.getpeercert(binary_form=True)).hexdigest()
         if actual != self.expected:
             self.close()
-            raise HueError("The bridge certificate has changed. Please trust the bridge again.")
+            raise HueCertificateError("The bridge certificate has changed. Please trust the bridge again.")
 
 
 def request(config, method, path, body=None):
     conn = PinnedConnection(address(config["ip"]), config["fingerprint"])
     headers = {"Accept": "application/json"}
-    if config.get("key"):
+    if config.get("key") and path != "/api":
         headers["hue-application-key"] = config["key"]
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -102,7 +107,8 @@ def request(config, method, path, body=None):
             error_type = HueAuthError if response.status in (401, 403) else HueError
             raise error_type("Bridge returned HTTP %d. %s" % (response.status, errors))
         if isinstance(result, dict) and result.get("errors"):
-            raise HueError(str(result["errors"][0].get("description", result["errors"][0])))
+            error = result["errors"][0]
+            raise HueError(str(error.get("description", error) if isinstance(error, dict) else error))
         return result
     finally:
         conn.close()
@@ -118,7 +124,9 @@ def paired(config):
 def resources(config):
     paired(config)
     result = request(config, "GET", "/clip/v2/resource")
-    return result.get("data", [])
+    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        raise HueError("The bridge returned an invalid resource list.")
+    return result["data"]
 
 
 def ref(services, kind):
@@ -163,10 +171,84 @@ def snapshot(items):
     homes = by_type.get("bridge_home", [])
     home_service = ref(homes[0].get("services", []), "grouped_light") if homes else None
     home_state = grouped.get(home_service, {})
-    return {"lights": lights, "groups": groups, "home": home_service,
+    bridge_id = next((b.get("bridge_id") for b in by_type.get("bridge", []) if b.get("bridge_id")), None)
+    group_map = {g["id"]: g for g in groups}
+    scenes = []
+    for scene in by_type.get("scene", []):
+        group_id = scene.get("group", {}).get("rid")
+        if group_id not in group_map:
+            continue
+        scenes.append({"id": scene["id"], "name": scene.get("metadata", {}).get("name", "Scene"),
+                       "group": group_id, "groupName": group_map[group_id]["name"],
+                       "active": scene.get("status", {}).get("active", "inactive")})
+    scenes.sort(key=lambda s: (s["groupName"].casefold(), s["name"].casefold()))
+    return {"lights": lights, "groups": groups, "scenes": scenes, "bridgeId": bridge_id,
+            "favorites": favorite_entries(bridge_id), "home": home_service,
             "on": home_state.get("on", {}).get("on", any(light["on"] for light in lights)),
             "brightness": home_state.get("dimming", {}).get("brightness"),
             "color": any(light["color"] for light in lights), "paired": True}
+
+
+def favorite_store():
+    try:
+        data = json.loads(FAVORITES.read_text())
+        if not isinstance(data, dict) or not isinstance(data.get("bridges", {}), dict):
+            raise ValueError()
+        return data
+    except FileNotFoundError:
+        return {"bridges": {}}
+    except (ValueError, OSError) as exc:
+        raise HueError("Could not read favorites. Check hue-favorites.json.") from exc
+
+
+def favorite_entries(bridge_id):
+    if not bridge_id:
+        return []
+    entries = favorite_store().get("bridges", {}).get(bridge_id, [])
+    if not isinstance(entries, list) or any(not isinstance(e, dict) or e.get("kind") not in ("group", "scene")
+                                           or not isinstance(e.get("id"), str) for e in entries):
+        raise HueError("Invalid favorites for this bridge.")
+    return entries
+
+
+def favorite(config, kind, target, enabled):
+    view = snapshot(resources(config))
+    bridge_id = view["bridgeId"]
+    if not bridge_id:
+        raise HueError("The bridge did not provide its identity.")
+    if kind not in ("group", "scene") or enabled not in ("true", "false"):
+        raise HueError("Invalid favorite action.")
+    collection = view["groups"] if kind == "group" else view["scenes"]
+    if enabled == "true" and not any(x["id"] == target for x in collection):
+        raise HueError("Favorite resource no longer exists.")
+    store = favorite_store()
+    entries = [e for e in favorite_entries(bridge_id) if not (e["kind"] == kind and e["id"] == target)]
+    if enabled == "true":
+        entries.append({"kind": kind, "id": target})
+    store.setdefault("bridges", {})[bridge_id] = entries
+    save(store, FAVORITES)
+    view["favorites"] = entries
+    return {"state": view}
+
+
+def recall(config, target):
+    view = snapshot(resources(config))
+    if not any(s["id"] == target for s in view["scenes"]):
+        raise HueError("Scene no longer exists on this bridge.")
+    request(config, "PUT", "/clip/v2/resource/scene/" + resource_id(target), {"recall": {"action": "active"}})
+    return after_write(config)
+
+
+def after_write(config, warning=""):
+    result = {"applied": True}
+    try:
+        result["state"] = snapshot(resources(config))
+    except (HueError, OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
+        suffix = "Bridge accepted the change, but its current state could not be read: %s" % exc
+        warning = (warning + " " + suffix).strip()
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def rgb_xy(hex_color):
@@ -182,6 +264,12 @@ def rgb_xy(hex_color):
     if total <= 0:
         raise HueError("Black is not a light color; use the switch to turn lights off.")
     return {"x": round(x / total, 5), "y": round(y / total, 5)}
+
+
+def color_brightness(hex_color):
+    # RGB value in an HSV-style picker represents the light's brightness.
+    # The CIE xy coordinate alone does not carry luminance information.
+    return max(1, round(max(int(hex_color[i:i + 2], 16) for i in (1, 3, 5)) / 255 * 100, 1))
 
 
 def resource_id(value):
@@ -212,12 +300,14 @@ def control(config, kind, target, operation, value):
     else:
         raise HueError("Unknown control scope.")
 
+    warning = ""
     if operation == "color":
         colored = [l for l in affected if l["color"]]
         if not colored:
             raise HueError("No color-capable lights in this selection.")
         xy = rgb_xy(value)
-        payload = {"on": {"on": True}, "color": {"xy": xy}}
+        payload = {"on": {"on": True}, "color": {"xy": xy},
+                   "dimming": {"brightness": color_brightness(value)}}
         if kind != "light" and service and len(colored) == len(affected):
             # One group write avoids a burst of individual PUTs (and bridge
             # throttling), but only when every member can accept a color.
@@ -226,8 +316,12 @@ def control(config, kind, target, operation, value):
             for index, light in enumerate(colored):
                 try:
                     request(config, "PUT", "/clip/v2/resource/light/" + resource_id(light["id"]), payload)
-                except HueError as exc:
-                    raise HueError("Could not set color for %s: %s" % (light["name"], exc)) from exc
+                except (HueError, OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
+                    if index == 0:
+                        raise HueError("Could not set color for %s: %s" % (light["name"], exc)) from exc
+                    warning = "%d of %d lights accepted the color. %s failed: %s" % (
+                        index, len(colored), light["name"], exc)
+                    break
                 if index < len(colored) - 1:
                     time.sleep(0.12)
     else:
@@ -247,12 +341,18 @@ def control(config, kind, target, operation, value):
             raise HueError("Unknown action.")
         endpoint = "light" if kind == "light" else "grouped_light"
         request(config, "PUT", "/clip/v2/resource/%s/%s" % (endpoint, resource_id(service)), payload)
-    return snapshot(resources(config))
+    # The PUT was accepted by the bridge. A subsequent GET may fail even though
+    # the lights changed; never report that as a failed write or blindly retry.
+    return after_write(config, warning)
 
 
 def main(args):
     config = load()
     command = args[0] if args else "status"
+    if command == "recall" and len(args) == 2:
+        return recall(config, args[1])
+    if command == "favorite" and len(args) == 4:
+        return favorite(config, *args[1:])
     if command == "discover":
         found = []
         try:
@@ -308,11 +408,15 @@ def main(args):
             return {"paired": False, "trusted": bool(config.get("fingerprint")), "ip": config.get("ip", "")}
         try:
             return dict(snapshot(resources(config)), ip=config["ip"])
-        except HueAuthError:
-            config["key"] = ""
-            save(config)
+        except HueAuthError as exc:
+            # A 403 can also mean insufficient permission or a temporary
+            # bridge condition. Keep the key; manual re-pairing replaces it.
             return {"paired": False, "trusted": True, "ip": config["ip"],
-                    "message": "Application key expired. Pair again."}
+                    "authError": True,
+                    "message": "Bridge rejected access (%s). Your key was kept. Retry or pair again." % exc}
+        except (HueError, OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
+            return {"paired": True, "offline": True, "ip": config["ip"],
+                    "message": "Bridge unavailable: %s" % exc}
     if command == "set" and len(args) == 5:
         return control(config, *args[1:])
     raise HueError("Invalid Hue command.")

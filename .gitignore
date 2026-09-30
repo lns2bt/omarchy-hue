@@ -3,4 +3,5 @@ __pycache__/
 .pytest_cache/
 *.bak*
 hue.json
+hue-favorites.json
 *.log

@@ -7,9 +7,12 @@ A Philips Hue control panel for the Omarchy status bar. It uses Omarchy's native
 - **All:** switch or dim every light through the bridge-home grouped-light service; choose a color for color-capable lights.
 - **Groups:** browse Hue rooms and zones in a compact grid, then switch, dim, or color the selected group.
 - **Lights:** browse individual bulbs and control each one separately.
-- Color swatches and a `#RRGGBB` field. White-only lights can still be switched and dimmed; mixed groups send color only to compatible lights.
+- **Scenes:** recall existing Hue scenes, with their room/zone names and active status.
+- Pin scenes and groups with a star. Scene favorites activate immediately; group favorites open the group controls. Favorites are stored locally per stable bridge identity in `hue-favorites.json`; deleted resources are hidden from quick access.
+- An HSV color picker with a saturation/brightness area, hue strip, live preview, and a synchronized `#RRGGBB` field. Dragging previews locally; releasing sends one command to the bridge. White-only lights can still be switched and dimmed; mixed groups send color only to compatible lights.
 - Automatic discovery using local mDNS (`avahi-browse`) with Hue's discovery endpoint as a fallback; manual local IP entry always works.
 - Errors remain visible next to the controls until you start another action.
+- Temporary bridge failures show an offline state and retry while the panel is open; access errors never silently delete the stored application key.
 
 ## Requirements
 
@@ -62,7 +65,7 @@ For a manually installed copy:
 bash uninstall.sh
 ```
 
-This disables the widget and removes its code, retaining `hue.json` so a reinstall keeps the pairing. To also delete local pairing data:
+This disables the widget and removes its code, retaining `hue.json` and `hue-favorites.json` so a reinstall keeps pairing and favorites. To also delete both local data files:
 
 ```sh
 bash uninstall.sh --purge
@@ -76,7 +79,9 @@ For a plugin installed with `omarchy plugin add`, use `omarchy plugin remove loc
 python3 -B -m unittest discover -s tests -v
 ```
 
-`hue.py` is a small JSON-over-stdout helper. It reads the Hue v2 resource graph, maps rooms and zones to grouped-light services, translates RGB colors to CIE xy, and makes pinned HTTPS requests. When all lights in a selection support color, a single grouped-light PUT avoids a burst of per-light writes; mixed groups target color-capable lights individually.
+`hue.py` is a small JSON-over-stdout helper. It reads the Hue v2 resource graph, maps rooms and zones to grouped-light services, translates RGB colors to CIE xy plus HSV value to Hue brightness, and makes pinned HTTPS requests. Choosing a color also sets brightness to the value shown in the picker. When all lights in a selection support color, a single grouped-light PUT avoids a burst of per-light writes; mixed groups target color-capable lights individually.
+
+A bridge-accepted write and the subsequent state refresh are reported separately: if refreshing fails, the panel shows a warning rather than claiming the command failed. When only some lights in a mixed group accept a color, the panel reports the partial result. A 401/403 response offers re-pairing without discarding the saved key, and pairing does not send that old key in its request.
 
 API references: [authentication](https://www.openhue.io/api/openhue-api-1/auth.md), [resources](https://www.openhue.io/api/openhue-api-1/resource.md), [lights](https://www.openhue.io/api/openhue-api-1/light.md), [grouped lights](https://www.openhue.io/api/openhue-api-1/grouped-light.md), [rooms](https://www.openhue.io/api/openhue-api-1/room.md), and [zones](https://www.openhue.io/api/openhue-api-1/zone.md).
 

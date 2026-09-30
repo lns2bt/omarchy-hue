@@ -23,6 +23,7 @@ esac
 config_home=${XDG_CONFIG_HOME:-$HOME/.config}
 destination="$config_home/omarchy/plugins/local.hue"
 credentials="$config_home/omarchy/hue.json"
+favorites="$config_home/omarchy/hue-favorites.json"
 
 command -v omarchy >/dev/null || die "Missing command: omarchy"
 command -v omarchy-shell >/dev/null || die "Missing command: omarchy-shell"
@@ -34,6 +35,7 @@ omarchy-shell shell ping >/dev/null || die "Omarchy shell is not running. Log in
 [[ ! -d "$destination/.git" ]] || die "This plugin is git-managed; use 'omarchy plugin remove local.hue --yes' instead."
 if "$purge"; then
   [[ ! -L "$credentials" ]] || die "Refusing to remove a symlink: $credentials"
+  [[ ! -L "$favorites" ]] || die "Refusing to remove a symlink: $favorites"
 fi
 python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1], encoding="utf-8")).get("id") != "local.hue")' "$destination/manifest.json" \
   || die "The directory does not contain a local.hue plugin."
@@ -43,6 +45,7 @@ rm -r -- "$destination"
 omarchy-shell shell rescanPlugins >/dev/null
 if "$purge"; then
   rm -f -- "$credentials"
+  rm -f -- "$favorites"
   printf 'Plugin and local pairing removed.\n'
 else
   printf 'Plugin removed. Local pairing kept at %s (use --purge to delete it).\n' "$credentials"
